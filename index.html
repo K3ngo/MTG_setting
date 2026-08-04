@@ -329,6 +329,7 @@ let S = {
   fixed: null,            // 確定した候補
   // 打合せごとに変わらない設定。毎回入れ直さなくていいようフォーム本体から分離してある
   prefs: LS.get('mtg.prefs', {o:'', k:'', base:''}),
+  brokenDraft: false,     // 旧版の不具合で参加者が失われた下書きを復元したか
   showMail: null,         // 参加者のメール欄を出すか（null = 入力済みなら自動で出す）
   half: false,            // 開始時刻を30分刻みで出すか
 };
@@ -358,10 +359,16 @@ async function route(){
   // 新規作成（下書きがあれば復元）
   const draft = LS.get('mtg.draft', null);
   if (draft && draft.ev){
-    S.ev = draft.ev;
+    const ev = draft.ev;
+    // 候補が確定済み（発行後）なのに参加者が消えている下書きは壊れている。
+    // 旧版に、集計画面での入力が下書きを空で上書きしてしまう不具合があったため。
+    // 候補や件名は活かしたまま、参加者の再入力を促す状態に戻す
+    const broken = (ev.s || []).length > 0 && !(ev.p || []).some(p => p && p[0]);
     S.dates = new Set(draft.dates||[]);
     S.times = new Set(draft.times||[]);
     S.excl = new Set(draft.excl||[]);
+    S.brokenDraft = broken;
+    S.ev = broken ? {...ev, p:[['',''],['','']], s:[]} : ev;
   }
   S.base = S.prefs.base || '';
   renderCreate();
@@ -414,6 +421,13 @@ function renderCreate(){
     ? [pf.o ? esc(pf.o) : null, pf.k ? 'Meetリンクあり' : null, pf.base ? '置き場所あり' : null].filter(Boolean).join(' ／ ')
     : 'まだ未設定';
   view.innerHTML = `
+  ${S.brokenDraft ? `<div class="note warn">
+    <h3>参加者の情報が失われていました</h3>
+    <p style="margin:0">以前のバージョンの不具合で、保存されていた下書きから参加者が消えていました。
+    件名・候補日程・議題は復元してあります。<b>参加者の名前を入れ直して、もう一度URLを発行してください。</b></p>
+    <p class="hint" style="margin:8px 0 0">発行し直すと、すでに配ったURLと受け取った回答コードは使えなくなります。
+    手元に発行済みのURL（<code>#m=</code> を含むもの）が残っていれば、そちらを開くほうが確実です（参加者ごと復元されます）。</p>
+  </div>` : ''}
   <details class="card tight"${isSet ? '' : ' open'}>
     <summary>⚙ あなたの設定 <span class="hint">${pfSummary}</span></summary>
     <p class="hint" style="margin:12px 0">打合せごとに変わらない項目です。一度入れれば次回も使われます。</p>
@@ -726,7 +740,9 @@ function renderManage(){
     <button data-tab="tally" class="${S.tab==='tally'?'on':''}">② 回答を集計する${S.replies.length?` (${new Set(S.replies.map(r=>r.i)).size})`:''}</button>
   </div>
   <div id="tabbody"></div>`;
-  view.querySelectorAll('[data-tab]').forEach(b=>b.onclick = ()=>{ S.tab = b.dataset.tab; renderManage(); });
+  // タブ切り替えは route() 経由でURLから読み直す。
+  // 万一 S.ev が壊れても、URLが正しければ表示が復旧する（多層防御）
+  view.querySelectorAll('[data-tab]').forEach(b=>b.onclick = async ()=>{ S.tab = b.dataset.tab; await route(); });
   $('#edit').onclick = ()=>{
     if (!confirm('作成画面に戻ります。\n\n候補日程や参加者を変更すると、すでに配ったURLと回答コードは使えなくなります（変更しなければそのまま使えます）。')) return;
     saveDraft(); location.hash = '';
