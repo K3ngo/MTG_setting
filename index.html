@@ -499,8 +499,12 @@ function renderCreate(){
 
   renderPList(); renderCal(); renderTimes(); renderSlotList();
 
-  // 参加者の追加/削除以外の入力はDOMから読むので、変更時にstateへ同期
-  view.addEventListener('input', ()=>{ syncForm(); saveDraft(); });
+  // 参加者の追加/削除以外の入力はDOMから読むので、変更時にstateへ同期する。
+  // view は画面をまたいで使い回す要素なので、renderCreate が再実行されても二重登録しない
+  if (!view._syncBound){
+    view._syncBound = true;
+    view.addEventListener('input', ()=>{ if ($('#f-t')){ syncForm(); saveDraft(); } });
+  }
   view.querySelectorAll('[data-preset]').forEach(b=>b.onclick = ()=>{
     const p = b.dataset.preset;
     if (p==='clear') S.times.clear();
@@ -519,6 +523,10 @@ function renderCreate(){
 }
 
 function syncForm(){
+  // view に張った input リスナーは画面遷移後も生き続けるため、管理画面や回答画面での入力でも発火する。
+  // 作成画面が出ていないときに走ると S.ev の件名と参加者が空になり、
+  // イベント指紋が変わって発行済みの回答コードが「別の打合せ」と誤判定されてしまう
+  if (!$('#f-t')) return;
   const g = id => { const el = $(id); return el ? el.value : ''; };
   S.ev.t = g('#f-t').trim();
   S.ev.m = parseInt(g('#f-m'), 10) || 60;
