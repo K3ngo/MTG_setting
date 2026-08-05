@@ -100,20 +100,19 @@ button:disabled{opacity:.45; cursor:not-allowed}
 .cal-cell.on{background:var(--accent); color:var(--accent-fg); font-weight:700}
 .cal-cell.today{border-color:var(--accent)}
 
-/* 時刻トグル */
-.time-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:5px}
-.time-grid button{padding:7px 0; font-size:13.5px; text-align:center}
-.time-grid button.on{background:var(--accent); color:var(--accent-fg); border-color:transparent; font-weight:600}
-.chips{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px}
+/* 候補日 × 時刻のマトリクス */
+.chips{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center}
+.tg-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:4px}
+table.tg{border-collapse:separate; border-spacing:3px; width:auto; margin:0}
+table.tg th,table.tg td{padding:0; border:none; background:none; white-space:nowrap; position:static}
+.tg-h{border:none; background:none; color:var(--muted); font-size:12px; font-weight:600;
+  padding:3px 7px; border-radius:6px; white-space:nowrap}
+.tg-h:hover{background:var(--line2); color:var(--fg)}
+.tg-c{display:block; width:100%; min-width:56px; height:29px; padding:0;
+  border:1px solid var(--line); border-radius:6px; background:var(--card)}
+.tg-c:hover{border-color:var(--accent); background:var(--accent-soft)}
+.tg-c.on{background:var(--accent); border-color:transparent}
 
-/* 候補リスト（日付ごとに1行、時刻をチップで並べる） */
-.slotdays{display:flex; flex-direction:column; gap:7px; max-height:250px; overflow-y:auto}
-.slotday{display:flex; align-items:center; gap:6px; flex-wrap:wrap}
-.slotday .d{font-weight:700; font-size:13.5px; min-width:74px; flex:none}
-.chip{display:inline-flex; align-items:center; gap:5px; padding:4px 10px; font-size:13px; border-radius:99px; background:var(--line2); border:1px solid var(--line)}
-.chip .x{opacity:.4; font-size:11px}
-.chip:hover{background:var(--ng-bg); border-color:var(--ng-line); color:var(--ng)}
-.chip:hover .x{opacity:1}
 /* チェックボックス付きの小さなラベル */
 .check{display:inline-flex; align-items:flex-start; gap:6px; cursor:pointer; font-size:12.5px; color:var(--muted)}
 .check input{margin:2px 0 0; cursor:pointer; flex:none}
@@ -334,9 +333,8 @@ let S = {
   ev: emptyEvent(),
   evB64: '',              // ev のエンコード結果（URL組み立てを同期で行うためのキャッシュ）
   cal: null,              // {y, m} カレンダー表示月
-  dates: new Set(),
-  times: new Set(),
-  excl: new Set(),
+  dates: new Set(),       // カレンダーで選んだ候補日
+  slots: new Set(),       // 候補そのもの（"YYYYMMDDhhmm"）。日付ごとに違う時刻を選べる
   base: '',               // 配布用ベースURL（prefs.base の作業用コピー）
   tab: 'issue',           // 管理画面のタブ
   replies: [],            // [{i, a, c}]
@@ -381,9 +379,8 @@ async function route(){
     // 旧版に、集計画面での入力が下書きを空で上書きしてしまう不具合があったため。
     // 候補や件名は活かしたまま、参加者の再入力を促す状態に戻す
     const broken = (ev.s || []).length > 0 && !(ev.p || []).some(p => p && p[0]);
-    S.dates = new Set(draft.dates||[]);
-    S.times = new Set(draft.times||[]);
-    S.excl = new Set(draft.excl||[]);
+    S.dates = new Set(draft.dates || []);
+    S.slots = draft.slots ? new Set(draft.slots) : slotsFromLegacy(draft);
     S.brokenDraft = broken;
     S.ev = broken ? {...ev, p:[['',''],['','']], s:[]} : ev;
   }
@@ -402,28 +399,22 @@ function renderBroken(e){
 /* ============================================================
    候補スロットの生成 / 逆算
    ============================================================ */
-function buildSlots(){
-  const ds = [...S.dates].sort(), ts = [...S.times].sort(), out = [];
-  for (const d of ds) for (const t of ts){
-    const k = d + t;
-    if (!S.excl.has(k)) out.push(k);
+function buildSlots(){ return [...S.slots].sort(); }
+function loadDraftMeta(){
+  S.slots = new Set(S.ev.s || []);
+  S.dates = new Set([...S.slots].map(s => s.slice(0, 8)));
+  S.base = S.prefs.base || '';
+}
+/* 旧形式の下書き（日付×時刻の直積＋除外リスト）を、候補の集合に変換する */
+function slotsFromLegacy(draft){
+  const ex = new Set(draft.excl || []), out = new Set();
+  for (const d of (draft.dates || [])) for (const t of (draft.times || [])){
+    if (!ex.has(d + t)) out.add(d + t);
   }
   return out;
 }
-function decompose(slots){
-  const dates = new Set(), times = new Set();
-  for (const s of slots){ dates.add(s.slice(0,8)); times.add(s.slice(8,12)); }
-  const have = new Set(slots), excl = new Set();
-  for (const d of dates) for (const t of times){ if (!have.has(d+t)) excl.add(d+t); }
-  return {dates, times, excl};
-}
-function loadDraftMeta(){
-  const d = decompose(S.ev.s||[]);
-  S.dates = d.dates; S.times = d.times; S.excl = d.excl;
-  S.base = S.prefs.base || '';
-}
 function saveDraft(){
-  LS.set('mtg.draft', {ev:S.ev, dates:[...S.dates], times:[...S.times], excl:[...S.excl]});
+  LS.set('mtg.draft', {ev:S.ev, dates:[...S.dates], slots:[...S.slots]});
 }
 
 /* ============================================================
@@ -608,22 +599,26 @@ function renderCreate(){
 
   <div class="card">
     <h2>3. 候補日程</h2>
-    <p class="hint" style="margin:6px 0 12px">あなた自身は回答者に入りません。自分が出られる時間だけ選んでください。</p>
+    <p class="hint" style="margin:6px 0 12px">
+      日付を選ぶと右に時間割が出ます。<b>マスをクリックして候補にしてください</b>（日付ごとに違う時間を選べます）。<br>
+      時刻の見出しを押すとその時刻を全日まとめて、日付の見出しを押すとその日をまとめて選べます。<br>
+      あなた自身は回答者に入らないので、自分が出られる時間だけ選んでください。
+    </p>
     <div class="row" style="align-items:flex-start; gap:20px">
-      <div style="flex:1; min-width:280px">
+      <div style="flex:0 0 auto">
         <div id="cal"></div>
       </div>
       <div style="flex:1; min-width:250px">
         <div class="chips">
-          <button class="btn-sm" data-preset="am">午前</button>
-          <button class="btn-sm" data-preset="pm">午後</button>
+          <button class="btn-sm" data-preset="am">午前を全日</button>
+          <button class="btn-sm" data-preset="pm">午後を全日</button>
           <button class="btn-sm" data-preset="clear">クリア</button>
           <label class="check" style="margin-left:auto"><input type="checkbox" id="halftgl"> 30分刻み</label>
         </div>
-        <div class="time-grid" id="times"></div>
+        <div class="tg-wrap" id="tgrid"></div>
       </div>
     </div>
-    <div id="slots" style="margin-top:14px"></div>
+    <div id="slots" style="margin-top:12px"></div>
   </div>
 
   <div class="card">
@@ -634,7 +629,7 @@ function renderCreate(){
     <div id="createerr"></div>
   </div>`;
 
-  renderPList(); renderCal(); renderTimes(); renderSlotList();
+  renderPList(); renderCal(); renderGrid(); renderSlotList();
 
   // 参加者の追加/削除以外の入力はDOMから読むので、変更時にstateへ同期する。
   // view は画面をまたいで使い回す要素なので、renderCreate が再実行されても二重登録しない
@@ -643,18 +638,21 @@ function renderCreate(){
     view.addEventListener('input', ()=>{ if ($('#f-t')){ syncForm(); saveDraft(); } });
   }
   view.querySelectorAll('[data-preset]').forEach(b=>b.onclick = ()=>{
-    const p = b.dataset.preset;
-    if (p==='clear') S.times.clear();
-    else if (p==='am') ['1000','1100'].forEach(t=>S.times.add(t));
-    else ['1300','1400','1500','1600','1700'].forEach(t=>S.times.add(t));
-    renderTimes(); renderSlotList(); saveDraft();
+    const p = b.dataset.preset, days = [...S.dates];
+    if (p === 'clear'){ S.slots.clear(); }
+    else if (!days.length){ toast('先にカレンダーで候補日を選んでください'); return; }
+    else {
+      const ts = p === 'am' ? ['1000','1100'] : ['1300','1400','1500','1600','1700'];
+      for (const d of days) for (const t of ts) S.slots.add(d + t);
+    }
+    renderGrid(); renderSlotList(); saveDraft();
   });
-  $('#halftgl').onchange = ev => { S.half = ev.target.checked; renderTimes(); };
+  $('#halftgl').onchange = ev => { S.half = ev.target.checked; renderGrid(); };
   $('#go').onclick = issue;
   $('#reset').onclick = ()=>{
     if (!confirm('入力中の件名・参加者・候補日程を消します。\n「あなたの設定」と「進行中の日程調整」は残ります。')) return;
     localStorage.removeItem('mtg.draft');
-    S = {...S, ev:emptyEvent(), dates:new Set(), times:new Set(), excl:new Set(), brokenDraft:false};
+    S = {...S, ev:emptyEvent(), dates:new Set(), slots:new Set(), brokenDraft:false};
     renderCreate();
   };
   bindList();
@@ -751,56 +749,79 @@ function renderCal(){
   });
   $('#cal').querySelectorAll('[data-date]').forEach(b=>b.onclick = ()=>{
     const k = b.dataset.date;
-    S.dates.has(k) ? S.dates.delete(k) : S.dates.add(k);
-    renderCal(); renderSlotList(); saveDraft();
+    if (S.dates.has(k)){
+      S.dates.delete(k);
+      [...S.slots].forEach(s => { if (s.startsWith(k)) S.slots.delete(s); });   // その日の候補も一緒に外す
+    } else {
+      S.dates.add(k);
+    }
+    renderCal(); renderGrid(); renderSlotList(); saveDraft();
   });
 }
 
-function renderTimes(){
-  // :30 を選んだ状態で1時間刻みに戻すと選択が見えなくなるため、その場合は強制的に30分刻み表示
-  const half = S.half || [...S.times].some(t => t.slice(2) !== '00');
+/* 候補日 × 時刻のマトリクス。マスをクリックして候補を1つずつ選ぶ。
+   日付ごとに違う時刻を選べる。行(時刻)・列(日付)のヘッダーでまとめて選択/解除もできる */
+function renderGrid(){
+  const box = $('#tgrid');
+  if (!box) return;
+  const days = [...S.dates].sort();
+  if (!days.length){
+    box.innerHTML = `<p class="hint" style="margin:0">左のカレンダーで候補日を選ぶと、ここに時間割が出ます。</p>`;
+    return;
+  }
+  // :30 を選んでいる状態で1時間刻みに戻すと選択が見えなくなるため、その場合は強制的に30分刻み表示
+  const half = S.half || [...S.slots].some(s => s.slice(10) !== '00');
   const tgl = $('#halftgl');
   if (tgl) tgl.checked = half;
-  let html = '';
-  for (let h=8; h<=20; h++) for (const mi of (half ? ['00','30'] : ['00'])){
-    if (h===20 && mi==='30') continue;
-    const t = P2(h)+mi;
-    html += `<button data-time="${t}" class="${S.times.has(t)?'on':''}">${h}:${mi}</button>`;
+  const times = [];
+  for (let h = 8; h <= 20; h++) for (const mi of (half ? ['00','30'] : ['00'])){
+    if (h === 20 && mi === '30') continue;
+    times.push(P2(h) + mi);
   }
-  $('#times').innerHTML = html;
-  $('#times').querySelectorAll('[data-time]').forEach(b=>b.onclick = ()=>{
-    const t = b.dataset.time;
-    S.times.has(t) ? S.times.delete(t) : S.times.add(t);
-    renderTimes(); renderSlotList(); saveDraft();
+  let html = `<table class="tg"><thead><tr><th></th>`;
+  for (const d of days){
+    html += `<th><button class="tg-h" data-col="${d}" title="この日をまとめて選択／解除">${esc(mdLabel(d))}</button></th>`;
+  }
+  html += `</tr></thead><tbody>`;
+  for (const t of times){
+    html += `<tr><th><button class="tg-h" data-row="${t}" title="この時刻を全日まとめて選択／解除">${+t.slice(0,2)}:${t.slice(2)}</button></th>`;
+    for (const d of days){
+      const k = d + t;
+      html += `<td><button class="tg-c${S.slots.has(k) ? ' on' : ''}" data-cell="${k}"` +
+              ` aria-label="${esc(mdLabel(d))} ${t.slice(0,2)}:${t.slice(2)}"></button></td>`;
+    }
+    html += `</tr>`;
+  }
+  box.innerHTML = html + `</tbody></table>`;
+
+  const redraw = ()=>{ renderGrid(); renderSlotList(); saveDraft(); };
+  box.querySelectorAll('[data-cell]').forEach(b => b.onclick = ()=>{
+    const k = b.dataset.cell;
+    S.slots.has(k) ? S.slots.delete(k) : S.slots.add(k);
+    redraw();
+  });
+  box.querySelectorAll('[data-row]').forEach(b => b.onclick = ()=>{
+    const t = b.dataset.row, on = days.every(d => S.slots.has(d + t));
+    days.forEach(d => on ? S.slots.delete(d + t) : S.slots.add(d + t));
+    redraw();
+  });
+  box.querySelectorAll('[data-col]').forEach(b => b.onclick = ()=>{
+    const d = b.dataset.col, on = times.every(t => S.slots.has(d + t));
+    times.forEach(t => on ? S.slots.delete(d + t) : S.slots.add(d + t));
+    redraw();
   });
 }
 
 function renderSlotList(){
   const box = $('#slots');
   if (!box) return;
-  const slots = buildSlots();
-  if (!slots.length){
-    box.innerHTML = `<p class="hint" style="margin:0">日付と開始時刻の両方を選ぶと、ここに候補が出ます。</p>`;
-    return;
-  }
-  const byDay = new Map();
-  for (const s of slots){
-    const d = s.slice(0,8);
-    if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d).push(s);
-  }
-  let html = `<h3>候補 ${slots.length}件 <span class="hint" style="font-weight:400">（クリックで外せます）</span></h3><div class="slotdays">`;
-  for (const [d, items] of byDay){
-    html += `<div class="slotday"><span class="d">${esc(mdLabel(d))}</span>`
-      + items.map(s => `<button class="chip" data-ex="${s}" title="この候補を外す">${esc(timeLabel(s))}<span class="x">✕</span></button>`).join('')
-      + `</div>`;
-  }
-  html += `</div>`;
-  if (S.excl.size) html += `<p class="hint" style="margin:8px 0 0">外した候補：${S.excl.size}件 <button class="btn-link" id="unex">戻す</button></p>`;
-  if (slots.length > 24) html += `<div class="note warn" style="margin-top:10px">候補が${slots.length}件あります。回答する側の負担が大きいので、10件前後に絞ると回答率が上がります。</div>`;
+  // 候補そのものはマトリクスが表しているので、ここは件数の確認だけ
+  const n = S.slots.size;
+  if (!n){ box.innerHTML = ''; return; }
+  const days = new Set([...S.slots].map(s => s.slice(0, 8)));
+  let html = `<p class="hint" style="margin:0">選択中の候補：<b>${n}件</b>（${days.size}日間）</p>`;
+  if (n > 24) html += `<div class="note warn" style="margin-top:10px">候補が${n}件あります。回答する側の負担が大きいので、10件前後に絞ると回答率が上がります。</div>`;
   box.innerHTML = html;
-  box.querySelectorAll('[data-ex]').forEach(b=>b.onclick = ()=>{ S.excl.add(b.dataset.ex); renderSlotList(); saveDraft(); });
-  const un = $('#unex'); if (un) un.onclick = ()=>{ S.excl.clear(); renderSlotList(); saveDraft(); };
 }
 
 async function issue(){
@@ -1071,9 +1092,11 @@ async function makeCode(){
   const reply = [subject, code, c ? `\n補足：${c}` : null].filter(x=>x!==null).join('\n');
   // 宛先の @ はエンコードしない（古いメーラーが %40 を解釈できない場合があるため）
   const to = encodeURIComponent((e.rm || '').trim()).replace(/%40/g, '@');
-  const mailHref = to
-    ? `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reply)}`
-    : '';
+  const qs = `subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reply)}`;
+  // mailto はOS既定のメールアプリ（Windowsでは多くの場合Outlook）が開く。
+  // ブラウザのGmailを使っている人向けに、Gmailの作成画面を直接開く導線も併記する
+  const mailHref  = to ? `mailto:${to}?${qs}` : '';
+  const gmailHref = to ? `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&${qs.replace('subject=','su=')}` : '';
 
   const ok = e.s.filter((_, k)=>S.ans[k]==='2').length;
   const mb = e.s.filter((_, k)=>S.ans[k]==='1').length;
@@ -1086,9 +1109,11 @@ async function makeCode(){
       ? `下のボタンを押すとメールが開きます。宛先・件名・本文は入力済みなので、<b>送信ボタンを押せば完了</b>です。`
       : `下のボタンでコピーして、<b>主催者${S.ev.o?`（${esc(S.ev.o)}さん）`:''}のチャットに貼って返信</b>してください。`}</p>
     <div class="actions">
-      ${mailHref ? `<a href="${esc(mailHref)}"><button class="btn-primary btn-lg">メールで返信する</button></a>` : ''}
+      ${mailHref ? `<a href="${esc(mailHref)}"><button class="btn-primary btn-lg">メールアプリで送る</button></a>` : ''}
+      ${gmailHref ? `<a href="${esc(gmailHref)}" target="_blank" rel="noopener"><button class="btn-primary btn-lg">Gmailで送る</button></a>` : ''}
       <button class="${mailHref ? 'btn-ghost' : 'btn-primary btn-lg'}" id="cpr">${mailHref ? 'コピーして返信' : '返信文をコピー'}</button>
     </div>
+    ${mailHref ? `<p class="hint" style="margin:8px 0 0">「メールアプリ」はこのPCの既定のメール（Outlookなど）、「Gmail」はブラウザのGmailが開きます。どちらも宛先・件名・本文は入力済みなので、送信を押すだけです。</p>` : ''}
     <details style="margin:14px 0 0">
       <summary>回答コードを直接見る</summary>
       <div class="codebox" style="margin:10px 0 8px">${esc(code)}</div>
