@@ -157,6 +157,17 @@ tr.rank1 td.dt{color:var(--ok)}
 .legend{display:flex; gap:16px; flex-wrap:wrap; font-size:13px; margin-top:8px}
 .legend span b{font-size:15px}
 
+/* 発行済みMTGの索引一覧 */
+.mlist{display:flex; flex-direction:column; gap:6px}
+.mrow{display:flex; align-items:center; gap:10px; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--line2)}
+.minfo{flex:1; min-width:0}
+.mname{font-weight:700; font-size:14.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.minfo .hint{font-size:12px; margin:0}
+@media (max-width:560px){
+  .mrow{flex-wrap:wrap}
+  .minfo{flex-basis:100%}
+}
+
 /* 発行URL一覧 */
 .plist{display:flex; flex-direction:column; gap:10px}
 .pitem{border:1px solid var(--line); border-radius:10px; padding:11px 12px; background:var(--line2)}
@@ -311,8 +322,9 @@ const LS = {
 };
 
 function emptyEvent(){
-  // k = 事前発行したGoogle Meetのリンク。あれば確定時に自動で埋め込む
-  return { v:1, t:'', o:'', m:60, l:'', k:'', d:'', p:[['',''],['','']], s:[] };
+  // k  = 事前発行したGoogle Meetのリンク。あれば確定時に自動で埋め込む
+  // rm = 回答の返信先メールアドレス。あれば参加者画面に「メールで返信」ボタンが出る
+  return { v:1, t:'', o:'', m:60, l:'', k:'', rm:'', d:'', p:[['',''],['','']], s:[] };
 }
 let S = {
   ev: emptyEvent(),
@@ -328,7 +340,7 @@ let S = {
   myIdx: 0,
   fixed: null,            // 確定した候補
   // 打合せごとに変わらない設定。毎回入れ直さなくていいようフォーム本体から分離してある
-  prefs: LS.get('mtg.prefs', {o:'', k:'', base:''}),
+  prefs: LS.get('mtg.prefs', {o:'', k:'', rm:'', base:''}),
   brokenDraft: false,     // 旧版の不具合で参加者が失われた下書きを復元したか
   showMail: null,         // 参加者のメール欄を出すか（null = 入力済みなら自動で出す）
   half: false,            // 開始時刻を30分刻みで出すか
@@ -410,15 +422,114 @@ function saveDraft(){
 }
 
 /* ============================================================
-   画面1: 作成
+   発行したMTGの索引
+   どの回答コードがどのMTGのものかを主催者が判断しなくて済むようにするための一覧。
+   データの原本はURLなので、これはあくまで探す手間を省く索引。
    ============================================================ */
+function loadList(){ return LS.get('mtg.list', []); }
+function repliesOf(fp){ return LS.get('mtg.rep.' + fp, []); }
+function answeredCount(fp){ return new Set(repliesOf(fp).map(r => r.i)).size; }
+function saveToList(){
+  const list = loadList(), fp = fpOf(S.ev);
+  const entry = {fp, t:S.ev.t, b:S.evB64, at:Date.now(), n:S.ev.s.length, p:S.ev.p.map(x => x[0])};
+  const i = list.findIndex(x => x.fp === fp);
+  if (i >= 0) list[i] = entry; else list.unshift(entry);
+  LS.set('mtg.list', list.slice(0, 20));   // 増えすぎないよう古いものから落とす
+}
+
+/* 貼られたテキストから回答コードを拾い、指紋を見て該当MTGへ自動で振り分ける */
+async function fileCodes(text){
+  const found = text.match(/MTG1:[A-Za-z0-9_-]+/g) || [];
+  const list = loadList();
+  const ok = [], unknown = [], bad = [];
+  for (const token of found){
+    let r;
+    try{ r = await decB(token.slice(5)); }
+    catch(e){ bad.push('コードが壊れています（途中で切れている可能性があります）'); continue; }
+    const m = list.find(x => x.fp === r.h);
+    if (!m){ unknown.push(r); continue; }
+    if (typeof r.i !== 'number' || !(m.p || [])[r.i]){ bad.push('参加者を特定できないコードです'); continue; }
+    if (typeof r.a !== 'string' || r.a.length !== m.n){ bad.push(`「${m.t}」の候補数と一致しないコードです`); continue; }
+    const reps = repliesOf(m.fp).filter(x => x.i !== r.i);   // 同じ人の再回答は上書き
+    reps.push({i:r.i, a:r.a, c:r.c || ''});
+    LS.set('mtg.rep.' + m.fp, reps);
+    ok.push({t:m.t, name:m.p[r.i]});
+  }
+  return {ok, unknown, bad, total:found.length};
+}
+
+/* ============================================================
+   画面1: 作成（先頭に発行済みMTGの一覧を出す）
+   ============================================================ */
+function renderList(){
+  const list = loadList();
+  if (!list.length) return '';
+  const rows = list.map(m => {
+    const got = answeredCount(m.fp), total = (m.p || []).length;
+    const d = new Date(m.at || 0);
+    return `<div class="mrow">
+      <div class="minfo">
+        <div class="mname">${esc(m.t || '(件名なし)')}</div>
+        <p class="hint">${m.at ? `${d.getMonth()+1}/${d.getDate()}発行` : ''}${(m.p||[]).length ? ' ／ ' + esc((m.p||[]).join('、')) : ''}</p>
+      </div>
+      <span class="badge ${total > 0 && got >= total ? 'b1' : 'b0'}">${got}/${total}名</span>
+      <button class="btn-sm" data-open="${m.fp}">開く</button>
+      <button class="btn-x" data-drop="${m.fp}" title="一覧から削除">✕</button>
+    </div>`;
+  }).join('');
+  return `<div class="card">
+    <h2>進行中の日程調整 <span class="badge b0">${list.length}件</span></h2>
+    <div class="mlist" style="margin:12px 0 0">${rows}</div>
+    <div class="sep"></div>
+    <h3>回答コードを貼る <span class="hint" style="font-weight:400">（どのMTGのものでもここでOK）</span></h3>
+    <textarea id="lpaste" placeholder="届いたメールやチャットの文章をそのまま貼り付け。複数人・複数MTGが混ざっていても自動で振り分けます"></textarea>
+    <div class="actions"><button class="btn-primary" id="lload">読み込む</button></div>
+    <div id="lerr"></div>
+  </div>`;
+}
+
+function bindList(){
+  view.querySelectorAll('[data-open]').forEach(b => b.onclick = ()=>{
+    const m = loadList().find(x => x.fp === b.dataset.open);
+    if (m) location.hash = 'm=' + m.b;
+  });
+  view.querySelectorAll('[data-drop]').forEach(b => b.onclick = ()=>{
+    const m = loadList().find(x => x.fp === b.dataset.drop);
+    if (!m) return;
+    if (!confirm(`「${m.t}」を一覧から削除します。\n受け取った回答も消えます。\n（発行済みURLが残っていれば、そこから開き直せます）`)) return;
+    LS.set('mtg.list', loadList().filter(x => x.fp !== m.fp));
+    localStorage.removeItem('mtg.rep.' + m.fp);
+    syncForm(); renderCreate();
+  });
+  const ll = $('#lload');
+  if (!ll) return;
+  ll.onclick = async ()=>{
+    const txt = $('#lpaste').value;
+    if (!txt.trim()){ toast('回答コードを貼り付けてください'); return; }
+    const {ok, unknown, bad, total} = await fileCodes(txt);
+    const msgs = [];
+    if (ok.length) msgs.push(`<div class="note" style="margin:12px 0 0">${
+      ok.map(x => `<b>${esc(x.t)}</b> … ${esc(x.name)}さんの回答を読み込みました。`).join('<br>')}</div>`);
+    const errs = [];
+    if (!total) errs.push('「MTG1:」で始まる回答コードが見つかりませんでした。貼り付けた内容を確認してください。');
+    if (unknown.length) errs.push(`${unknown.length}件は上の一覧にないMTGの回答です。別の端末で発行したか、候補日程を変更した可能性があります。`);
+    errs.push(...new Set(bad));
+    if (errs.length) msgs.push(`<div class="note err" style="margin:12px 0 0"><ul style="margin:0">${
+      errs.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`);
+    syncForm();        // 入力途中の内容を退避してから
+    renderCreate();    // 一覧の回答数を更新する
+    if (msgs.length) $('#lerr').innerHTML = msgs.join('');
+  };
+}
+
 function renderCreate(){
   const e = S.ev;
   if (!S.cal){ const d = new Date(); S.cal = {y:d.getFullYear(), m:d.getMonth()+1}; }
   const pf = S.prefs;
-  const isSet = pf.o || pf.k || pf.base;
+  const isSet = pf.o || pf.k || pf.rm || pf.base;
   const pfSummary = isSet
-    ? [pf.o ? esc(pf.o) : null, pf.k ? 'Meetリンクあり' : null, pf.base ? '置き場所あり' : null].filter(Boolean).join(' ／ ')
+    ? [pf.o ? esc(pf.o) : null, pf.rm ? 'メールあり' : null, pf.k ? 'Meetリンクあり' : null,
+       pf.base ? '置き場所あり' : null].filter(Boolean).join(' ／ ')
     : 'まだ未設定';
   view.innerHTML = `
   ${S.brokenDraft ? `<div class="note warn">
@@ -428,6 +539,7 @@ function renderCreate(){
     <p class="hint" style="margin:8px 0 0">発行し直すと、すでに配ったURLと受け取った回答コードは使えなくなります。
     手元に発行済みのURL（<code>#m=</code> を含むもの）が残っていれば、そちらを開くほうが確実です（参加者ごと復元されます）。</p>
   </div>` : ''}
+  ${renderList()}
   <details class="card tight"${isSet ? '' : ' open'}>
     <summary>⚙ あなたの設定 <span class="hint">${pfSummary}</span></summary>
     <p class="hint" style="margin:12px 0">打合せごとに変わらない項目です。一度入れれば次回も使われます。</p>
@@ -437,16 +549,21 @@ function renderCreate(){
         <input type="text" id="p-o" value="${esc(pf.o)}" placeholder="例：宮崎">
       </div>
       <div class="field inline">
-        <label for="p-k">Google Meetのリンク <span class="opt">（任意）</span></label>
-        <input type="url" id="p-k" value="${esc(pf.k)}" placeholder="https://meet.google.com/abc-defg-hij">
+        <label for="p-rm">回答を受け取るメールアドレス <span class="opt">（任意）</span></label>
+        <input type="email" id="p-rm" value="${esc(pf.rm||'')}" placeholder="you@example.com">
       </div>
+    </div>
+    <div class="field">
+      <label for="p-k">Google Meetのリンク <span class="opt">（任意）</span></label>
+      <input type="url" id="p-k" value="${esc(pf.k)}" placeholder="https://meet.google.com/abc-defg-hij">
     </div>
     <div class="field" style="margin-bottom:0">
       <label for="p-base">このファイルの置き場所URL <span class="opt">（任意）</span></label>
       <input type="url" id="p-base" value="${esc(pf.base)}" placeholder="https://yourname.github.io/mtg/">
       <p class="hint" style="margin:0">
-        置き場所URL … 参加者がアクセスできる場所（共有フォルダ・社内サーバーなど）に置いたURL。空欄ならいま開いているURLを使います。<br>
-        Meetリンク … <a href="https://meet.google.com/" target="_blank" rel="noopener">meet.google.com</a> →「新しい会議を作成」→「後で使用する会議リンクを作成」で発行でき、使い回せます。入れておくと確定が2クリックで済みます。
+        メールアドレス … 入れておくと参加者の回答画面に「メールで返信」ボタンが出ます。件名にMTG名と回答者名が入るので、複数の調整が並行していても取り違えません。<br>
+        Meetリンク … <a href="https://meet.google.com/" target="_blank" rel="noopener">meet.google.com</a> →「新しい会議を作成」→「後で使用する会議リンクを作成」で発行でき、使い回せます。入れておくと確定が2クリックで済みます。<br>
+        置き場所URL … 参加者がアクセスできる場所に置いたURL。空欄ならいま開いているURLを使います。
       </p>
     </div>
   </details>
@@ -529,11 +646,12 @@ function renderCreate(){
   $('#halftgl').onchange = ev => { S.half = ev.target.checked; renderTimes(); };
   $('#go').onclick = issue;
   $('#reset').onclick = ()=>{
-    if (!confirm('件名・参加者・候補日程を消します。\n「あなたの設定」（名前・Meetリンク・置き場所URL）は残ります。')) return;
+    if (!confirm('入力中の件名・参加者・候補日程を消します。\n「あなたの設定」と「進行中の日程調整」は残ります。')) return;
     localStorage.removeItem('mtg.draft');
-    S = {...S, ev:emptyEvent(), dates:new Set(), times:new Set(), excl:new Set()};
+    S = {...S, ev:emptyEvent(), dates:new Set(), times:new Set(), excl:new Set(), brokenDraft:false};
     renderCreate();
   };
+  bindList();
 }
 
 function syncForm(){
@@ -549,10 +667,12 @@ function syncForm(){
   // 設定は開いているときだけDOMから読み、常に永続化する
   if ($('#p-o'))    S.prefs.o    = g('#p-o').trim();
   if ($('#p-k'))    S.prefs.k    = g('#p-k').trim();
+  if ($('#p-rm'))   S.prefs.rm   = g('#p-rm').trim();
   if ($('#p-base')) S.prefs.base = g('#p-base').trim();
   LS.set('mtg.prefs', S.prefs);
   S.ev.o = S.prefs.o;
   S.ev.k = S.prefs.k;
+  S.ev.rm = S.prefs.rm || '';
   S.base = S.prefs.base;
   const rows = view.querySelectorAll('[data-prow]');
   S.ev.p = [...rows].map(r => [
@@ -698,6 +818,7 @@ async function issue(){
   saveDraft();
   S.tab = 'issue';
   S.evB64 = await encB(S.ev);
+  saveToList();
   location.hash = 'm=' + S.evB64;
 }
 
@@ -817,7 +938,9 @@ function inviteMsg(i){
     respondUrl(i),
     ``,
     `※ 仮の予定が入っていても、動かせる／調整すれば出られる場合は「△」を選んでください。`,
-    `※ 回答後に「回答コード」が表示されるので、コピーしてこのチャットに貼って返信してください。`,
+    (e.rm || '').trim()
+      ? `※ 回答後に「メールで返信する」ボタンが出ます。押して送信するだけで完了です。`
+      : `※ 回答後に「回答コード」が表示されるので、コピーしてこのチャットに貼って返信してください。`,
     ``,
     e.o ? `${e.o}` : null,
   ].filter(x=>x!==null).join('\n');
@@ -932,26 +1055,36 @@ async function makeCode(){
   const payload = {v:1, h:fpOf(e), i:S.myIdx, a};
   if (c) payload.c = c;
   const code = 'MTG1:' + await encB(payload);
-  const reply = [
-    `${e.t} 日程調整の回答です（${e.p[S.myIdx][0]}）`,
-    code,
-    c ? `\n補足：${c}` : null,
-  ].filter(x=>x!==null).join('\n');
+  const me = e.p[S.myIdx][0];
+  // 主催者が複数のMTGを並行して調整していても取り違えないよう、件名にMTG名と回答者名を入れる
+  const subject = `【日程調整の回答】${e.t} ／ ${me}`;
+  const reply = [subject, code, c ? `\n補足：${c}` : null].filter(x=>x!==null).join('\n');
+  // 宛先の @ はエンコードしない（古いメーラーが %40 を解釈できない場合があるため）
+  const to = encodeURIComponent((e.rm || '').trim()).replace(/%40/g, '@');
+  const mailHref = to
+    ? `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reply)}`
+    : '';
 
   const ok = e.s.filter((_, k)=>S.ans[k]==='2').length;
   const mb = e.s.filter((_, k)=>S.ans[k]==='1').length;
   const box = $('#result');
   box.innerHTML = `
   <div class="card">
-    <h2>回答コードができました</h2>
+    <h2>あと1ステップです</h2>
     <div class="stat"><span>○ <b>${ok}件</b></span><span>△ <b>${mb}件</b></span><span>× <b>${n-ok-mb-missing}件</b></span>${missing?`<span>未回答 <b>${missing}件</b></span>`:''}</div>
-    <p>下のボタンでコピーして、<b>主催者${S.ev.o?`（${esc(S.ev.o)}さん）`:''}のチャットに貼って返信</b>してください。これで回答完了です。</p>
-    <div class="codebox">${esc(code)}</div>
+    <p>${mailHref
+      ? `下のボタンを押すとメールが開きます。宛先・件名・本文は入力済みなので、<b>送信ボタンを押せば完了</b>です。`
+      : `下のボタンでコピーして、<b>主催者${S.ev.o?`（${esc(S.ev.o)}さん）`:''}のチャットに貼って返信</b>してください。`}</p>
     <div class="actions">
-      <button class="btn-primary" id="cpr">返信文をコピー</button>
-      <button class="btn-ghost" id="cpc">コードだけコピー</button>
+      ${mailHref ? `<a href="${esc(mailHref)}"><button class="btn-primary btn-lg">メールで返信する</button></a>` : ''}
+      <button class="${mailHref ? 'btn-ghost' : 'btn-primary btn-lg'}" id="cpr">${mailHref ? 'コピーして返信' : '返信文をコピー'}</button>
     </div>
-    <p class="hint">この画面の回答内容はブラウザに保存されています。同じURLを開けば、あとから修正して再送できます（新しいコードで上書きされます）。</p>
+    <details style="margin:14px 0 0">
+      <summary>回答コードを直接見る</summary>
+      <div class="codebox" style="margin:10px 0 8px">${esc(code)}</div>
+      <button class="btn-sm btn-ghost" id="cpc">コードだけコピー</button>
+    </details>
+    <p class="hint">回答内容はこのブラウザに保存されます。同じURLを開けば、あとから直して再送できます（新しいコードで上書きされます）。</p>
   </div>`;
   $('#cpr').onclick = ()=>copy(reply, '返信文をコピーしました');
   $('#cpc').onclick = ()=>copy(code, 'コードをコピーしました');
@@ -1009,7 +1142,7 @@ function renderTally(){
   $('#tabbody').innerHTML = `
   <div class="card">
     <h2>回答コードを貼り付ける</h2>
-    <p class="hint" style="margin-bottom:10px">チャットで返ってきた文章をそのまま貼ってOKです（複数人分をまとめて貼れます）。コード部分だけ自動で読み取ります。</p>
+    <p class="hint" style="margin-bottom:10px">メールやチャットで返ってきた文章をそのまま貼ってOKです（複数人分をまとめて貼れます）。コード部分だけ自動で読み取ります。<br>トップ画面の「回答コードを貼る」欄なら、どのMTGのものでもまとめて振り分けられます。</p>
     <textarea id="paste" placeholder="MTG1:xxxxxxxxxxxx&#10;MTG1:yyyyyyyyyyyy" style="min-height:80px"></textarea>
     <div class="actions">
       <button class="btn-primary" id="load">読み込む</button>
