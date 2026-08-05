@@ -44,6 +44,8 @@ header.top .logo{
   display:grid; place-items:center; font-size:15px; flex:none;
 }
 header.top .sub{color:var(--muted); font-size:12.5px; width:100%; margin-top:-4px}
+header.top .home{display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; border-radius:8px}
+header.top .home:hover h1{text-decoration:underline}
 
 .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:14px; box-shadow:var(--shadow)}
 .card.tight{padding:14px}
@@ -200,8 +202,10 @@ footer.foot{text-align:center; color:var(--muted); font-size:12px; margin-top:26
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="logo">📅</div>
-    <h1>打合せ調整</h1>
+    <a href="#" class="home" title="最初の画面（進行中の一覧）に戻る">
+      <div class="logo">📅</div>
+      <h1>打合せ調整</h1>
+    </a>
     <div class="sub">サーバー・API不要。候補日程はURLに、回答はコードで受け取ります。</div>
   </header>
   <main id="view"></main>
@@ -363,6 +367,7 @@ async function route(){
       S.evB64 = h.slice(2);
       S.ev = await decB(S.evB64);
       loadDraftMeta();
+      saveToList();   // 以前発行したURLを開いた場合も索引に載せる
       return renderManage();
     }
   }catch(e){
@@ -431,8 +436,9 @@ function repliesOf(fp){ return LS.get('mtg.rep.' + fp, []); }
 function answeredCount(fp){ return new Set(repliesOf(fp).map(r => r.i)).size; }
 function saveToList(){
   const list = loadList(), fp = fpOf(S.ev);
-  const entry = {fp, t:S.ev.t, b:S.evB64, at:Date.now(), n:S.ev.s.length, p:S.ev.p.map(x => x[0])};
   const i = list.findIndex(x => x.fp === fp);
+  const entry = {fp, t:S.ev.t, b:S.evB64, n:S.ev.s.length, p:S.ev.p.map(x => x[0]),
+                 at: i >= 0 ? list[i].at : Date.now()};   // 既存なら発行日時を保つ
   if (i >= 0) list[i] = entry; else list.unshift(entry);
   LS.set('mtg.list', list.slice(0, 20));   // 増えすぎないよう古いものから落とす
 }
@@ -853,7 +859,10 @@ function renderManage(){
           ${e.l?`<span>場所 <b>${esc(e.l)}</b></span>`:''}
         </div>
       </div>
-      <button class="btn-sm btn-ghost" id="edit">内容を修正</button>
+      <div style="display:flex; gap:6px; flex-wrap:wrap">
+        <button class="btn-sm btn-ghost" id="tolist">← 一覧へ</button>
+        <button class="btn-sm btn-ghost" id="edit">内容を修正</button>
+      </div>
     </div>
   </div>
   <div class="tabs">
@@ -864,6 +873,7 @@ function renderManage(){
   // タブ切り替えは route() 経由でURLから読み直す。
   // 万一 S.ev が壊れても、URLが正しければ表示が復旧する（多層防御）
   view.querySelectorAll('[data-tab]').forEach(b=>b.onclick = async ()=>{ S.tab = b.dataset.tab; await route(); });
+  $('#tolist').onclick = ()=>{ location.hash = ''; };
   $('#edit').onclick = ()=>{
     if (!confirm('作成画面に戻ります。\n\n候補日程や参加者を変更すると、すでに配ったURLと回答コードは使えなくなります（変更しなければそのまま使えます）。')) return;
     saveDraft(); location.hash = '';
