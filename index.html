@@ -163,6 +163,7 @@ tr.rank1 td.dt{color:var(--ok)}
 .mrow{display:flex; align-items:center; gap:10px; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--line2)}
 .minfo{flex:1; min-width:0}
 .mname{font-weight:700; font-size:14.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mrow.done{opacity:.6; background:none}
 .minfo .hint{font-size:12px; margin:0}
 @media (max-width:560px){
   .mrow{flex-wrap:wrap}
@@ -428,9 +429,11 @@ function answeredCount(fp){ return new Set(repliesOf(fp).map(r => r.i)).size; }
 function saveToList(){
   const list = loadList(), fp = fpOf(S.ev);
   const i = list.findIndex(x => x.fp === fp);
+  const prev = i >= 0 ? list[i] : null;
   const entry = {fp, t:S.ev.t, b:S.evB64, n:S.ev.s.length, p:S.ev.p.map(x => x[0]),
-                 at: i >= 0 ? list[i].at : Date.now()};   // 既存なら発行日時を保つ
-  if (i >= 0) list[i] = entry; else list.unshift(entry);
+                 at: prev ? prev.at : Date.now()};        // 既存なら発行日時を保つ
+  if (prev && prev.done) entry.done = prev.done;          // 「済」も維持する
+  if (prev) list[i] = entry; else list.unshift(entry);
   LS.set('mtg.list', list.slice(0, 20));   // 増えすぎないよう古いものから落とす
 }
 
@@ -461,21 +464,27 @@ async function fileCodes(text){
 function renderList(){
   const list = loadList();
   if (!list.length) return '';
-  const rows = list.map(m => {
+  // 調整中を上、確定済みを下へ。同じ区分の中では新しく発行したものから並べる
+  const sorted = [...list].sort((a, b) => (a.done ? 1 : 0) - (b.done ? 1 : 0) || (b.at || 0) - (a.at || 0));
+  const active = sorted.filter(m => !m.done).length;
+  const rows = sorted.map(m => {
     const got = answeredCount(m.fp), total = (m.p || []).length;
     const d = new Date(m.at || 0);
-    return `<div class="mrow">
+    return `<div class="mrow${m.done ? ' done' : ''}">
       <div class="minfo">
         <div class="mname">${esc(m.t || '(件名なし)')}</div>
         <p class="hint">${m.at ? `${d.getMonth()+1}/${d.getDate()}発行` : ''}${(m.p||[]).length ? ' ／ ' + esc((m.p||[]).join('、')) : ''}</p>
       </div>
-      <span class="badge ${total > 0 && got >= total ? 'b1' : 'b0'}">${got}/${total}名</span>
+      ${m.done
+        ? `<span class="badge b1">済 ${esc(slotLabel(m.done))}</span>
+           <button class="btn-sm btn-ghost" data-undone="${m.fp}" title="調整中に戻す">戻す</button>`
+        : `<span class="badge ${total > 0 && got >= total ? 'b1' : 'b0'}">${got}/${total}名</span>`}
       <button class="btn-sm" data-open="${m.fp}">開く</button>
       <button class="btn-x" data-drop="${m.fp}" title="一覧から削除">✕</button>
     </div>`;
   }).join('');
   return `<div class="card">
-    <h2>進行中の日程調整 <span class="badge b0">${list.length}件</span></h2>
+    <h2>日程調整の一覧 <span class="badge ${active ? 'b0' : 'b1'}">${active ? `調整中 ${active}件` : 'すべて確定済み'}</span></h2>
     <div class="mlist" style="margin:12px 0 0">${rows}</div>
     <div class="sep"></div>
     <h3>回答コードを貼る <span class="hint" style="font-weight:400">（どのMTGのものでもここでOK）</span></h3>
@@ -489,6 +498,11 @@ function bindList(){
   view.querySelectorAll('[data-open]').forEach(b => b.onclick = ()=>{
     const m = loadList().find(x => x.fp === b.dataset.open);
     if (m) location.hash = 'm=' + m.b;
+  });
+  view.querySelectorAll('[data-undone]').forEach(b => b.onclick = ()=>{
+    const list = loadList(), i = list.findIndex(x => x.fp === b.dataset.undone);
+    if (i >= 0){ delete list[i].done; LS.set('mtg.list', list); }
+    syncForm(); renderCreate();
   });
   view.querySelectorAll('[data-drop]').forEach(b => b.onclick = ()=>{
     const m = loadList().find(x => x.fp === b.dataset.drop);
@@ -1177,7 +1191,7 @@ function renderTally(){
     return w(a)-w(b) || a.ng-b.ng || a.mb-b.mb || a.none-b.none || (a.s<b.s?-1:1);
   });
   const list = S.tallySort === 'date' ? rows : order;
-  const best = order.length && !order[0].ng ? order[0] : null;
+  const best = gotN && order.length && !order[0].ng ? order[0] : null;   // 回答が無いうちは薦めない
 
   $('#tabbody').innerHTML = `
   <div class="card">
@@ -1203,7 +1217,7 @@ function renderTally(){
       <span>回答 <b>${gotN} / ${e.p.length}名</b></span>
       ${gotN < e.p.length ? `<span style="color:var(--maybe)">未回答：${e.p.filter((p, i)=>!got[i]).map(p=>esc(p[0])).join('、')}</span>` : '<span style="color:var(--ok)">全員回答済み</span>'}
     </div>
-    ${!gotN ? `<p class="hint">まだ回答がありません。上の欄に回答コードを貼ると、ここに一覧が出ます。</p>` : `
+    ${!gotN ? `<p class="hint" style="margin:0 0 12px">まだ回答がありません。上の欄に回答コードを貼ると、ここに集計されます。回答を待たずに確定することもできます。</p>` : ''}
     ${best ? `<div class="note" style="margin:6px 0 12px"><h3>おすすめ</h3><p style="margin:0"><b>${esc(slotLabel(best.s))}〜${esc(timeLabel(addMin(best.s, e.m)))}</b> ${
       best.rank===1 ? '－ 全員が出席可能です。' :
       best.mb ? `－ ×はいません。${best.mb}名が「調整すれば出られる」と回答しています。` : '－ 現時点で×はいません。'
@@ -1229,7 +1243,6 @@ function renderTally(){
     </div>
     ${[...byIdx.values()].some(r=>r.c) ? `<div class="sep"></div><h3>参加者コメント</h3>
       ${[...byIdx.entries()].filter(([i, r])=>r.c).map(([i, r])=>`<p style="margin-bottom:6px"><b>${esc(e.p[i][0])}</b>：${esc(r.c)}</p>`).join('')}` : ''}
-    `}
   </div>
   <div id="fixbox"></div>`;
 
@@ -1343,7 +1356,20 @@ function renderFix(r){
     <h3>手順2：参加者に確定を連絡する</h3>
     <div class="codebox" style="white-space:pre-wrap; font-family:inherit; font-size:13.5px; user-select:text">${esc(fixMsg(slot))}</div>
     <div class="actions"><button class="btn-primary" id="cpfix">確定連絡文をコピー</button></div>
+
+    <div class="sep"></div>
+    <div class="actions">
+      <button class="btn-primary" id="markdone">この日程で確定し、一覧を「済」にする</button>
+      <span class="hint">一覧では下に移動し、調整中のものだけが上に残ります。あとから戻せます。</span>
+    </div>
   </div>`;
+  $('#markdone').onclick = ()=>{
+    const list = loadList(), i = list.findIndex(x => x.fp === fpOf(e));
+    if (i >= 0){ list[i].done = slot; LS.set('mtg.list', list); }
+    S.fixed = null;
+    toast('「済」にしました');
+    location.hash = '';   // 一覧へ戻る
+  };
   $('#fxclose').onclick = ()=>{ S.fixed = null; $('#fixbox').innerHTML = ''; };
   $('#cpcal').onclick = ()=>copy(gcalUrl(slot), 'カレンダー登録リンクをコピーしました');
   $('#cpfix').onclick = ()=>copy(fixMsg(slot), '確定連絡文をコピーしました');
